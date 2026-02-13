@@ -7,13 +7,13 @@ def test_storage_roundtrip_with_sessions(tmp_path):
     storage = SqliteStorage(str(db))
 
     session_id = storage.create_session(123)
-    state = GameState(mode=GameMode.PRESENT, country="Poland", model="qwen3:8b")
+    state = GameState(mode=GameMode.HISTORICAL_SIMULATION, country="Poland", model="qwen3:8b")
     state.add_action("Подписать оборонный пакт")
     state.add_dialog("НАТО", "Усилить присутствие")
     storage.save_session_state(123, session_id, state, "advisor")
 
     loaded_state, loaded_waiting = storage.load_session_state(123, session_id)
-    assert loaded_state.mode == GameMode.PRESENT
+    assert loaded_state.mode == GameMode.HISTORICAL_SIMULATION
     assert loaded_state.country == "Poland"
     assert loaded_state.model == "qwen3:8b"
     assert loaded_waiting == "advisor"

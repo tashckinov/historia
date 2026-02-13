@@ -87,9 +87,7 @@ def set_waiting(user_id: int, waiting: str | None) -> None:
 
 def mode_keyboard() -> InlineKeyboardMarkup:
     buttons = [
-        [InlineKeyboardButton(GameMode.PRESENT.value, callback_data="mode:present")],
-        [InlineKeyboardButton(GameMode.PRESENT_WITH_EVENTS.value, callback_data="mode:present_events")],
-        [InlineKeyboardButton(GameMode.MODE_2015.value, callback_data="mode:2015")],
+        [InlineKeyboardButton(GameMode.HISTORICAL_SIMULATION.value, callback_data="mode:historical")],
     ]
     return InlineKeyboardMarkup(buttons)
 
@@ -240,9 +238,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data.startswith("mode:"):
         mode_key = data.split(":", 1)[1]
         mapping = {
-            "present": GameMode.PRESENT,
-            "present_events": GameMode.PRESENT_WITH_EVENTS,
-            "2015": GameMode.MODE_2015,
+            "historical": GameMode.HISTORICAL_SIMULATION,
         }
         state.mode = mapping[mode_key]
         persist_user(user_id)
