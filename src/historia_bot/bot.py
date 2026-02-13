@@ -16,6 +16,7 @@ from telegram.ext import (
 )
 
 from historia_bot.ai import AIEngine, default_ollama_base_url
+from historia_bot.formatting import format_advisor_message
 from historia_bot.game import DIALOG_PARTNERS, PERIOD_OPTIONS, GameMode, GameState, build_world_update_prompt
 
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 USER_STATES: Dict[int, GameState] = defaultdict(GameState)
 WAITING_INPUT: Dict[int, str] = {}
 AVAILABLE_MODELS: Dict[int, List[str]] = {}
+
 
 
 def mode_keyboard() -> InlineKeyboardMarkup:
@@ -219,7 +221,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text("Советник временно недоступен. Проверьте Ollama.")
             return
 
-        await update.message.reply_text(f"🧠 Советник:\n{answer}", reply_markup=menu_keyboard())
+        formatted_answer = format_advisor_message(answer)
+        await update.message.reply_text(
+            f"🧠 Советник:\n{formatted_answer}",
+            parse_mode="HTML",
+            reply_markup=menu_keyboard(),
+        )
         return
 
     await update.message.reply_text("Используйте /start для начала новой игры.")
