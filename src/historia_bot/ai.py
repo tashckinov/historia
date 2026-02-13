@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import os
+from pathlib import Path
+import re
 import urllib.request
 from typing import Any, Dict, List
 
@@ -44,6 +45,57 @@ def default_ollama_base_url() -> str:
     return "http://localhost:11434"
 
 
+def _extract_json_object(text: str) -> str | None:
+    if not text:
+        return None
+
+    fenced = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", text, flags=re.IGNORECASE)
+    if fenced:
+        return fenced.group(1)
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    return text[start : end + 1]
+
+
+def _parse_articles(raw: str) -> List[Dict[str, Any]]:
+    candidates: List[str] = []
+    direct = raw.strip()
+    if direct:
+        candidates.append(direct)
+    extracted = _extract_json_object(raw)
+    if extracted and extracted not in candidates:
+        candidates.append(extracted)
+
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+
+        articles = payload.get("articles", []) if isinstance(payload, dict) else []
+        if not isinstance(articles, list):
+            return []
+
+        normalized: List[Dict[str, Any]] = []
+        for item in articles:
+            if not isinstance(item, dict):
+                continue
+            title = item.get("title")
+            description = item.get("description")
+            normalized.append(
+                {
+                    "title": str(title).strip() if title is not None else "",
+                    "description": str(description).strip() if description is not None else "",
+                }
+            )
+        return normalized[:15]
+
+    return []
+
+
 class AIEngine:
     def __init__(self, model: str, base_url: str | None = None) -> None:
         self._model = model
@@ -68,9 +120,9 @@ class AIEngine:
                 result.append(name)
         return result
 
-    def _chat(self, system: str, user: str, temperature: float) -> str:
+    def _chat(self, system: str, user: str, temperature: float, json_mode: bool = False) -> str:
         url = f"{self._base_url}/api/chat"
-        body = {
+        body: Dict[str, Any] = {
             "model": self._model,
             "stream": False,
             "options": {"temperature": temperature},
@@ -79,6 +131,8 @@ class AIEngine:
                 {"role": "user", "content": user},
             ],
         }
+        if json_mode:
+            body["format"] = "json"
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             url=url,
@@ -104,12 +158,9 @@ class AIEngine:
 
     def generate_world_update(self, prompt: str) -> List[Dict[str, Any]]:
         raw = self._chat(
-            system="Ты генератор игровых новостей. Возвращай только валидный JSON.",
+            system="Ты генератор игровых новостей. Верни JSON-объект с полем articles.",
             user=prompt,
             temperature=0.9,
+            json_mode=True,
         )
-        payload = json.loads(raw)
-        articles = payload.get("articles", [])
-        if not isinstance(articles, list):
-            return []
-        return articles[:15]
+        return _parse_articles(raw)
