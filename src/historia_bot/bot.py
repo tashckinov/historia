@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 import logging
 import os
 from typing import Dict, List
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -26,6 +28,22 @@ USER_STATES: Dict[int, GameState] = {}
 WAITING_INPUT: Dict[int, str] = {}
 AVAILABLE_MODELS: Dict[int, List[str]] = {}
 STORAGE = SqliteStorage(os.environ.get("HISTORIA_DB_PATH", "historia.sqlite3"))
+
+
+async def animate_loading(message: Message, base_text: str) -> None:
+    frames = ["", ".", "..", "...", "..", "."]
+    index = 0
+    while True:
+        await message.edit_text(f"{base_text}{frames[index]}")
+        index = (index + 1) % len(frames)
+        await asyncio.sleep(0.45)
+
+
+async def stop_loading_animation(task: asyncio.Task[None], message: Message) -> None:
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+    await message.delete()
 
 
 def get_state(user_id: int) -> GameState:
@@ -225,12 +243,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         period = data.split(":", 1)[1]
         ai = AIEngine(model=state.model or "qwen3:8b")
         prompt = build_world_update_prompt(state, period)
+
+        loading_message = await query.message.reply_text("Генерация мировых событий")
+        loading_task = asyncio.create_task(animate_loading(loading_message, "Генерация мировых событий"))
         try:
-            articles = ai.generate_world_update(prompt)
+            articles = await asyncio.to_thread(ai.generate_world_update, prompt)
         except Exception as exc:
             logger.exception("AI error: %s", exc)
+            await stop_loading_animation(loading_task, loading_message)
             await query.message.reply_text("Не удалось получить обновление мира. Проверьте Ollama и попробуйте позже.")
             return
+        await stop_loading_animation(loading_task, loading_message)
 
         if not articles:
             await query.message.reply_text("За период не произошло значимых событий.")
@@ -288,12 +311,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"Модель: {state.model or '-'}\n"
             f"Вопрос игрока: {text}"
         )
+        loading_message = await update.message.reply_text("Генерация ответа советника")
+        loading_task = asyncio.create_task(animate_loading(loading_message, "Генерация ответа советника"))
         try:
-            answer = ai.ask_advisor(context)
+            answer = await asyncio.to_thread(ai.ask_advisor, context)
         except Exception as exc:
             logger.exception("Advisor error: %s", exc)
+            await stop_loading_animation(loading_task, loading_message)
             await update.message.reply_text("Советник временно недоступен. Проверьте Ollama.")
             return
+        await stop_loading_animation(loading_task, loading_message)
 
         formatted_answer = format_advisor_message(answer)
         await update.message.reply_text(
