@@ -347,7 +347,11 @@ def main() -> None:
     app.add_handler(CommandHandler("newgame", new_game))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.run_polling()
+
+    try:
+        app.run_polling()
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user (KeyboardInterrupt).")
 
 
 if __name__ == "__main__":
