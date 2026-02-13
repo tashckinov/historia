@@ -78,6 +78,14 @@ def menu_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def menu_message(state: GameState, title: str) -> str:
+    if not state.actions:
+        return f"{title}\n\nДействия за ход: пока нет."
+
+    actions = "\n".join(f"{i}. {action}" for i, action in enumerate(state.actions, 1))
+    return f"{title}\n\nДействия за ход:\n{actions}"
+
+
 def dialog_keyboard() -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(partner, callback_data=f"dialog:{partner}")] for partner in DIALOG_PARTNERS]
     return InlineKeyboardMarkup(rows)
@@ -94,8 +102,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if state.mode and state.model and state.country:
         await update.message.reply_text(
-            f"С возвращением! Продолжаем игру за {state.country} ({state.mode.value}, модель: {state.model}).\n"
-            "Выберите действие:",
+            menu_message(
+                state,
+                f"С возвращением! Продолжаем игру за {state.country} ({state.mode.value}, модель: {state.model}).\n"
+                "Выберите действие:",
+            ),
             reply_markup=menu_keyboard(),
         )
         return
@@ -247,7 +258,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         state.reset_turn()
         persist_user(user_id)
-        await query.message.reply_text("Ход завершён. Следующий ход:", reply_markup=menu_keyboard())
+        await query.message.reply_text(menu_message(state, "Ход завершён. Следующий ход:"), reply_markup=menu_keyboard())
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -261,7 +272,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         set_waiting(user_id, None)
         persist_user(user_id)
         await update.message.reply_text(
-            f"Вы играете за: {state.country}. Модель: {state.model}. Выберите действие:",
+            menu_message(state, f"Вы играете за: {state.country}. Модель: {state.model}. Выберите действие:"),
             reply_markup=menu_keyboard(),
         )
         return
@@ -273,7 +284,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not ok:
             await update.message.reply_text("Лимит действий за ход достигнут (15).")
         else:
-            await update.message.reply_text("Действие добавлено.", reply_markup=menu_keyboard())
+            await update.message.reply_text(menu_message(state, "Действие добавлено."), reply_markup=menu_keyboard())
         return
 
     if waiting and waiting.startswith("dialog:"):
@@ -281,7 +292,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         state.add_dialog(partner, text)
         set_waiting(user_id, None)
         persist_user(user_id)
-        await update.message.reply_text("Диалог сохранён.", reply_markup=menu_keyboard())
+        await update.message.reply_text(menu_message(state, "Диалог сохранён."), reply_markup=menu_keyboard())
         return
 
     if waiting == "advisor":
@@ -312,7 +323,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if state.mode and state.model and state.country:
-        await update.message.reply_text("Продолжаем вашу игру. Выберите действие:", reply_markup=menu_keyboard())
+        await update.message.reply_text(menu_message(state, "Продолжаем вашу игру. Выберите действие:"), reply_markup=menu_keyboard())
         return
 
     await update.message.reply_text("Используйте /start для начала или продолжения игры.")
