@@ -15,7 +15,7 @@ from telegram.ext import (
     filters,
 )
 
-from historia_bot.ai import AIEngine
+from historia_bot.ai import AIEngine, default_ollama_base_url
 from historia_bot.game import DIALOG_PARTNERS, PERIOD_OPTIONS, GameMode, GameState, build_world_update_prompt
 
 logging.basicConfig(level=logging.INFO)
@@ -95,8 +95,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if not models:
             await query.message.reply_text(
-                "Не удалось получить список моделей из Ollama (http://localhost:11434/api/tags). "
-                "Проверьте, что Ollama запущена и модель установлена.")
+                f"Не удалось получить список моделей из Ollama ({default_ollama_base_url()}/api/tags). "
+                "Проверьте, что Ollama запущена и модель установлена."
+            )
             return
 
         AVAILABLE_MODELS[user_id] = models

@@ -2,7 +2,7 @@
 
 Бот реализует игровой цикл:
 1. `/start` → выбор режима (настоящее, настоящее с событиями, 2015 с событиями 2025→сейчас).
-2. Автозагрузка моделей из Ollama (`http://localhost:11434/api/tags`) и выбор модели кнопками.
+2. Автозагрузка моделей из Ollama (`/api/tags`) и выбор модели кнопками.
 3. Выбор страны (рус/англ).
 4. Ход игрока:
    - до 15 действий,
@@ -11,8 +11,21 @@
 5. `Конец хода` → выбор периода перемотки.
 6. Ollama получает все действия и диалоги за период и возвращает 1–15 новостных «статей» (заголовок + описание).
 
+## Подключение к Ollama
+- В обычной Linux/macOS среде: по умолчанию `http://localhost:11434`.
+- В WSL: бот автоматически использует IP Windows-хоста из `/etc/resolv.conf`, то есть запросы идут на `http://<WIN_IP>:11434`.
+- Можно переопределить вручную через переменную:
+  - `OLLAMA_BASE_URL=http://<host>:11434`
+
+Проверка из WSL:
+
+```bash
+WIN_IP=$(grep -m1 nameserver /etc/resolv.conf | awk '{print $2}')
+curl "http://$WIN_IP:11434/api/tags"
+```
+
 ## Требования
-- Запущенный Ollama на `localhost:11434`.
+- Запущенный Ollama на хосте, доступный из окружения бота.
 - Установленная хотя бы одна модель (например, `qwen3:8b`).
 
 ## Запуск
@@ -22,11 +35,14 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 export TELEGRAM_BOT_TOKEN="..."
+# опционально, если нужно принудительно задать адрес Ollama:
+# export OLLAMA_BASE_URL="http://<host>:11434"
 python -m historia_bot.bot
 ```
 
 ## Структура
 - `src/historia_bot/game.py` — состояние игры, лимиты, сбор промпта.
-- `src/historia_bot/ai.py` — интеграция с Ollama API (`/api/tags`, `/api/chat`).
+- `src/historia_bot/ai.py` — интеграция с Ollama API (`/api/tags`, `/api/chat`) и выбор адреса для WSL/host.
 - `src/historia_bot/bot.py` — Telegram-обработчики и игровой процесс.
 - `tests/test_game.py` — базовые тесты логики.
+- `tests/test_ai.py` — тесты определения WSL и IP Windows-хоста.
