@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-from collections import defaultdict
 from typing import Dict, List
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -18,14 +17,39 @@ from telegram.ext import (
 from historia_bot.ai import AIEngine, default_ollama_base_url
 from historia_bot.formatting import format_advisor_message
 from historia_bot.game import DIALOG_PARTNERS, PERIOD_OPTIONS, GameMode, GameState, build_world_update_prompt
+from historia_bot.storage import SqliteStorage
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-USER_STATES: Dict[int, GameState] = defaultdict(GameState)
+USER_STATES: Dict[int, GameState] = {}
 WAITING_INPUT: Dict[int, str] = {}
 AVAILABLE_MODELS: Dict[int, List[str]] = {}
+STORAGE = SqliteStorage(os.environ.get("HISTORIA_DB_PATH", "historia.sqlite3"))
 
+
+def get_state(user_id: int) -> GameState:
+    if user_id not in USER_STATES:
+        state, waiting = STORAGE.load_user_state(user_id)
+        USER_STATES[user_id] = state
+        if waiting:
+            WAITING_INPUT[user_id] = waiting
+    return USER_STATES[user_id]
+
+
+def persist_user(user_id: int) -> None:
+    state = USER_STATES.get(user_id)
+    if state is None:
+        return
+    STORAGE.save_user_state(user_id, state, WAITING_INPUT.get(user_id))
+
+
+def set_waiting(user_id: int, waiting: str | None) -> None:
+    if waiting is None:
+        WAITING_INPUT.pop(user_id, None)
+    else:
+        WAITING_INPUT[user_id] = waiting
+    persist_user(user_id)
 
 
 def mode_keyboard() -> InlineKeyboardMarkup:
@@ -65,11 +89,54 @@ def period_keyboard() -> InlineKeyboardMarkup:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
+    state = get_state(user_id)
+
+    if state.mode and state.model and state.country:
+        await update.message.reply_text(
+            f"С возвращением! Продолжаем игру за {state.country} ({state.mode.value}, модель: {state.model}).\n"
+            "Выберите действие:",
+            reply_markup=menu_keyboard(),
+        )
+        return
+
+    if state.mode and not state.model:
+        try:
+            models = AIEngine.list_models()
+        except Exception as exc:
+            logger.exception("Failed to fetch Ollama models: %s", exc)
+            models = []
+
+        if not models:
+            await update.message.reply_text(
+                f"Не удалось получить список моделей из Ollama ({default_ollama_base_url()}/api/tags). "
+                "Проверьте, что Ollama запущена и модель установлена."
+            )
+            return
+
+        AVAILABLE_MODELS[user_id] = models
+        await update.message.reply_text("Выберите AI-модель:", reply_markup=model_keyboard(models))
+        return
+
+    if state.mode and state.model and not state.country:
+        set_waiting(user_id, "country")
+        await update.message.reply_text("Введите страну (на русском или английском):")
+        return
+
+    await update.message.reply_text(
+        "Добро пожаловать в геополитическую AI-игру. Выберите режим:",
+        reply_markup=mode_keyboard(),
+    )
+
+
+async def new_game(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    STORAGE.delete_user_state(user_id)
     USER_STATES[user_id] = GameState()
     WAITING_INPUT.pop(user_id, None)
     AVAILABLE_MODELS.pop(user_id, None)
+    persist_user(user_id)
     await update.message.reply_text(
-        "Добро пожаловать в геополитическую AI-игру. Выберите режим:",
+        "Новая игра создана. Выберите режим:",
         reply_markup=mode_keyboard(),
     )
 
@@ -78,7 +145,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    state = USER_STATES[user_id]
+    state = get_state(user_id)
 
     data = query.data
     if data.startswith("mode:"):
@@ -89,6 +156,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "2015": GameMode.MODE_2015,
         }
         state.mode = mapping[mode_key]
+        persist_user(user_id)
+
         try:
             models = AIEngine.list_models()
         except Exception as exc:
@@ -114,12 +183,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         state.model = models[model_index]
-        WAITING_INPUT[user_id] = "country"
+        persist_user(user_id)
+        set_waiting(user_id, "country")
         await query.message.reply_text(f"Выбрана модель: {state.model}\nВведите страну (на русском или английском):")
         return
 
     if data == "menu:add_action":
-        WAITING_INPUT[user_id] = "action"
+        set_waiting(user_id, "action")
         await query.message.reply_text("Введите действие вашей страны:")
         return
 
@@ -129,7 +199,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data.startswith("dialog:"):
         partner = data.split(":", 1)[1]
-        WAITING_INPUT[user_id] = f"dialog:{partner}"
+        set_waiting(user_id, f"dialog:{partner}")
         await query.message.reply_text(f"Введите сообщение для {partner}:")
         return
 
@@ -137,7 +207,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not state.model:
             await query.message.reply_text("Сначала выберите модель через /start.")
             return
-        WAITING_INPUT[user_id] = "advisor"
+        set_waiting(user_id, "advisor")
         await query.message.reply_text("Задайте вопрос советнику:")
         return
 
@@ -171,18 +241,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await query.message.reply_text(f"📰 {title}\n{description}")
 
         state.reset_turn()
+        persist_user(user_id)
         await query.message.reply_text("Ход завершён. Следующий ход:", reply_markup=menu_keyboard())
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    state = USER_STATES[user_id]
+    state = get_state(user_id)
     text = (update.message.text or "").strip()
     waiting = WAITING_INPUT.get(user_id)
 
     if waiting == "country":
         state.country = text
-        WAITING_INPUT.pop(user_id, None)
+        set_waiting(user_id, None)
+        persist_user(user_id)
         await update.message.reply_text(
             f"Вы играете за: {state.country}. Модель: {state.model}. Выберите действие:",
             reply_markup=menu_keyboard(),
@@ -191,7 +263,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if waiting == "action":
         ok = state.add_action(text)
-        WAITING_INPUT.pop(user_id, None)
+        set_waiting(user_id, None)
+        persist_user(user_id)
         if not ok:
             await update.message.reply_text("Лимит действий за ход достигнут (15).")
         else:
@@ -201,12 +274,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if waiting and waiting.startswith("dialog:"):
         partner = waiting.split(":", 1)[1]
         state.add_dialog(partner, text)
-        WAITING_INPUT.pop(user_id, None)
+        set_waiting(user_id, None)
+        persist_user(user_id)
         await update.message.reply_text("Диалог сохранён.", reply_markup=menu_keyboard())
         return
 
     if waiting == "advisor":
-        WAITING_INPUT.pop(user_id, None)
+        set_waiting(user_id, None)
         ai = AIEngine(model=state.model or "qwen3:8b")
         context = (
             f"Режим: {state.mode.value if state.mode else '-'}\n"
@@ -229,7 +303,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    await update.message.reply_text("Используйте /start для начала новой игры.")
+    if state.mode and state.model and state.country:
+        await update.message.reply_text("Продолжаем вашу игру. Выберите действие:", reply_markup=menu_keyboard())
+        return
+
+    await update.message.reply_text("Используйте /start для начала или продолжения игры.")
 
 
 def main() -> None:
@@ -239,6 +317,7 @@ def main() -> None:
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("newgame", new_game))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
