@@ -15,7 +15,7 @@ from telegram.ext import (
     filters,
 )
 
-from historia_bot.ai import AIEngine, default_ollama_base_url
+from historia_bot.ai import AIEngine, AIRequestTimeoutError, default_ollama_base_url
 from historia_bot.formatting import format_advisor_message
 from historia_bot.game import DIALOG_PARTNERS, PERIOD_OPTIONS, GameMode, GameState, build_world_update_prompt
 from historia_bot.storage import SqliteStorage
@@ -324,6 +324,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         loading_message = await query.message.reply_text("Генерация мировых событий...")
         try:
             articles = await asyncio.to_thread(ai.generate_world_update, prompt)
+        except AIRequestTimeoutError:
+            await loading_message.delete()
+            await query.message.reply_text(
+                "ИИ не успел сгенерировать события за отведённое время. "
+                "Попробуйте снова, сократите число действий за ход или увеличьте OLLAMA_REQUEST_TIMEOUT."
+            )
+            return
         except Exception as exc:
             logger.exception("AI error: %s", exc)
             await loading_message.delete()
@@ -395,6 +402,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         loading_message = await update.message.reply_text("Генерация ответа советника...")
         try:
             answer = await asyncio.to_thread(ai.ask_advisor, prompt_context)
+        except AIRequestTimeoutError:
+            await loading_message.delete()
+            await update.message.reply_text(
+                "Советник не успел ответить за отведённое время. "
+                "Попробуйте снова или увеличьте OLLAMA_REQUEST_TIMEOUT."
+            )
+            return
         except Exception as exc:
             logger.exception("Advisor error: %s", exc)
             await loading_message.delete()

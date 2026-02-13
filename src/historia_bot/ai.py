@@ -4,8 +4,27 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
+import urllib.error
 import urllib.request
 from typing import Any, Dict, List
+
+
+class AIEngineError(Exception):
+    """Base exception for AI engine failures."""
+
+
+class AIRequestTimeoutError(AIEngineError):
+    """Raised when Ollama request exceeds timeout."""
+
+
+def request_timeout_seconds() -> float:
+    raw = os.environ.get("OLLAMA_REQUEST_TIMEOUT", "120").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return 120.0
+    return value if value > 0 else 120.0
 
 
 def _is_wsl(osrelease_path: str = "/proc/sys/kernel/osrelease") -> bool:
@@ -100,6 +119,7 @@ class AIEngine:
     def __init__(self, model: str, base_url: str | None = None) -> None:
         self._model = model
         self._base_url = (base_url or default_ollama_base_url()).rstrip("/")
+        self._request_timeout = request_timeout_seconds()
 
     @staticmethod
     def list_models(base_url: str | None = None) -> List[str]:
@@ -140,8 +160,16 @@ class AIEngine:
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=120) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=self._request_timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (TimeoutError, socket.timeout) as exc:
+            raise AIRequestTimeoutError("Ollama request timed out") from exc
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", None)
+            if isinstance(reason, TimeoutError | socket.timeout):
+                raise AIRequestTimeoutError("Ollama request timed out") from exc
+            raise AIEngineError(f"Ollama request failed: {exc}") from exc
 
         message = payload.get("message", {})
         if not isinstance(message, dict):

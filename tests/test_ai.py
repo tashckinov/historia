@@ -1,4 +1,4 @@
-from historia_bot.ai import _is_wsl, _parse_articles, _wsl_windows_host_ip
+from historia_bot.ai import _is_wsl, _parse_articles, _wsl_windows_host_ip, request_timeout_seconds
 
 
 def test_wsl_windows_host_ip_from_resolv_conf(tmp_path):
@@ -26,3 +26,13 @@ def test_parse_articles_from_fenced_json_block():
 def test_parse_articles_returns_empty_on_invalid_json():
     raw = '{"articles": [{"title" "bad"}]}'
     assert _parse_articles(raw) == []
+
+
+def test_request_timeout_seconds_from_env(monkeypatch):
+    monkeypatch.setenv("OLLAMA_REQUEST_TIMEOUT", "240")
+    assert request_timeout_seconds() == 240.0
+
+
+def test_request_timeout_seconds_fallback_on_invalid(monkeypatch):
+    monkeypatch.setenv("OLLAMA_REQUEST_TIMEOUT", "abc")
+    assert request_timeout_seconds() == 120.0
