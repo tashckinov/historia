@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Tuple
 
 from historia_bot.game import DialogueEntry, GameMode, GameState, Turn, TurnAction
 
@@ -21,27 +21,89 @@ class SqliteStorage:
         with self._connect() as conn:
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS user_state (
-                    user_id INTEGER PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS sessions (
+                    session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    active INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_state (
+                    session_id INTEGER PRIMARY KEY,
                     mode TEXT,
                     country TEXT,
                     model TEXT,
                     waiting TEXT,
                     actions_json TEXT NOT NULL DEFAULT '[]',
-                    dialogs_json TEXT NOT NULL DEFAULT '[]'
+                    dialogs_json TEXT NOT NULL DEFAULT '[]',
+                    FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                 )
                 """
             )
 
-    def load_user_state(self, user_id: int) -> Tuple[GameState, str | None]:
+    def create_session(self, user_id: int, make_active: bool = True) -> int:
+        with self._connect() as conn:
+            cur = conn.execute("INSERT INTO sessions (user_id, active) VALUES (?, 0)", (user_id,))
+            session_id = int(cur.lastrowid)
+            conn.execute(
+                "INSERT INTO session_state (session_id, mode, country, model, waiting, actions_json, dialogs_json) VALUES (?, NULL, NULL, NULL, NULL, '[]', '[]')",
+                (session_id,),
+            )
+            if make_active:
+                conn.execute("UPDATE sessions SET active = 0 WHERE user_id = ?", (user_id,))
+                conn.execute("UPDATE sessions SET active = 1 WHERE session_id = ?", (session_id,))
+            return session_id
+
+    def list_sessions(self, user_id: int) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT s.session_id, s.active, st.mode, st.country, st.model
+                FROM sessions s
+                LEFT JOIN session_state st ON st.session_id = s.session_id
+                WHERE s.user_id = ?
+                ORDER BY s.session_id DESC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [
+            {
+                "session_id": int(row[0]),
+                "active": bool(row[1]),
+                "mode": row[2],
+                "country": row[3],
+                "model": row[4],
+            }
+            for row in rows
+        ]
+
+    def get_active_session_id(self, user_id: int) -> int | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT session_id FROM sessions WHERE user_id = ? AND active = 1", (user_id,)).fetchone()
+        return int(row[0]) if row else None
+
+    def set_active_session(self, user_id: int, session_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE sessions SET active = 0 WHERE user_id = ?", (user_id,))
+            conn.execute("UPDATE sessions SET active = 1 WHERE user_id = ? AND session_id = ?", (user_id, session_id))
+
+    def clear_active_session(self, user_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE sessions SET active = 0 WHERE user_id = ?", (user_id,))
+
+    def load_session_state(self, user_id: int, session_id: int) -> Tuple[GameState, str | None]:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT mode, country, model, waiting, actions_json, dialogs_json
-                FROM user_state
-                WHERE user_id = ?
+                SELECT st.mode, st.country, st.model, st.waiting, st.actions_json, st.dialogs_json
+                FROM session_state st
+                JOIN sessions s ON s.session_id = st.session_id
+                WHERE s.user_id = ? AND s.session_id = ?
                 """,
-                (user_id,),
+                (user_id, session_id),
             ).fetchone()
 
         if row is None:
@@ -79,36 +141,45 @@ class SqliteStorage:
         )
         return state, waiting
 
-    def save_user_state(self, user_id: int, state: GameState, waiting: str | None) -> None:
+    def save_session_state(self, user_id: int, session_id: int, state: GameState, waiting: str | None) -> None:
         actions_json = json.dumps([{"text": a.text} for a in state.current_turn.actions], ensure_ascii=False)
         dialogs_json = json.dumps(
             [{"partner": d.partner, "message": d.message} for d in state.current_turn.dialogs],
             ensure_ascii=False,
         )
         with self._connect() as conn:
+            # keep relation ownership check in update where clause
             conn.execute(
                 """
-                INSERT INTO user_state (user_id, mode, country, model, waiting, actions_json, dialogs_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    mode=excluded.mode,
-                    country=excluded.country,
-                    model=excluded.model,
-                    waiting=excluded.waiting,
-                    actions_json=excluded.actions_json,
-                    dialogs_json=excluded.dialogs_json
+                UPDATE session_state
+                SET mode = ?, country = ?, model = ?, waiting = ?, actions_json = ?, dialogs_json = ?
+                WHERE session_id = ?
                 """,
                 (
-                    user_id,
                     state.mode.value if state.mode else None,
                     state.country,
                     state.model,
                     waiting,
                     actions_json,
                     dialogs_json,
+                    session_id,
                 ),
             )
+            conn.execute("UPDATE sessions SET active = 1 WHERE user_id = ? AND session_id = ?", (user_id, session_id))
+
+    # backward-compatible wrappers
+    def load_user_state(self, user_id: int) -> Tuple[GameState, str | None]:
+        session_id = self.get_active_session_id(user_id)
+        if session_id is None:
+            return GameState(), None
+        return self.load_session_state(user_id, session_id)
+
+    def save_user_state(self, user_id: int, state: GameState, waiting: str | None) -> None:
+        session_id = self.get_active_session_id(user_id)
+        if session_id is None:
+            session_id = self.create_session(user_id, make_active=True)
+        self.save_session_state(user_id, session_id, state, waiting)
 
     def delete_user_state(self, user_id: int) -> None:
         with self._connect() as conn:
-            conn.execute("DELETE FROM user_state WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))

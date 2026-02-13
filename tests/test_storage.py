@@ -2,16 +2,17 @@ from historia_bot.game import GameMode, GameState
 from historia_bot.storage import SqliteStorage
 
 
-def test_storage_roundtrip(tmp_path):
+def test_storage_roundtrip_with_sessions(tmp_path):
     db = tmp_path / "historia.sqlite3"
     storage = SqliteStorage(str(db))
 
+    session_id = storage.create_session(123)
     state = GameState(mode=GameMode.PRESENT, country="Poland", model="qwen3:8b")
     state.add_action("Подписать оборонный пакт")
     state.add_dialog("НАТО", "Усилить присутствие")
-    storage.save_user_state(123, state, "advisor")
+    storage.save_session_state(123, session_id, state, "advisor")
 
-    loaded_state, loaded_waiting = storage.load_user_state(123)
+    loaded_state, loaded_waiting = storage.load_session_state(123, session_id)
     assert loaded_state.mode == GameMode.PRESENT
     assert loaded_state.country == "Poland"
     assert loaded_state.model == "qwen3:8b"
@@ -20,14 +21,17 @@ def test_storage_roundtrip(tmp_path):
     assert loaded_state.current_turn.dialogs[0].partner == "НАТО"
 
 
-def test_storage_delete(tmp_path):
+def test_list_and_activate_sessions(tmp_path):
     db = tmp_path / "historia.sqlite3"
     storage = SqliteStorage(str(db))
 
-    state = GameState(country="France")
-    storage.save_user_state(1, state, None)
-    storage.delete_user_state(1)
+    first = storage.create_session(1)
+    second = storage.create_session(1)
+    sessions = storage.list_sessions(1)
 
-    loaded_state, loaded_waiting = storage.load_user_state(1)
-    assert loaded_state.country is None
-    assert loaded_waiting is None
+    assert len(sessions) == 2
+    assert sessions[0]["session_id"] == second
+    assert sessions[0]["active"] is True
+
+    storage.set_active_session(1, first)
+    assert storage.get_active_session_id(1) == first

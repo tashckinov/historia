@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -23,33 +23,65 @@ from historia_bot.storage import SqliteStorage
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-USER_STATES: Dict[int, GameState] = {}
-WAITING_INPUT: Dict[int, str] = {}
+USER_STATES: Dict[Tuple[int, int], GameState] = {}
+WAITING_INPUT: Dict[Tuple[int, int], str] = {}
 AVAILABLE_MODELS: Dict[int, List[str]] = {}
+ACTIVE_SESSION: Dict[int, int] = {}
 STORAGE = SqliteStorage(os.environ.get("HISTORIA_DB_PATH", "historia.sqlite3"))
 
 
-def get_state(user_id: int) -> GameState:
-    if user_id not in USER_STATES:
-        state, waiting = STORAGE.load_user_state(user_id)
-        USER_STATES[user_id] = state
+def active_session_id(user_id: int) -> int | None:
+    session_id = ACTIVE_SESSION.get(user_id)
+    if session_id is not None:
+        return session_id
+    db_session_id = STORAGE.get_active_session_id(user_id)
+    if db_session_id is not None:
+        ACTIVE_SESSION[user_id] = db_session_id
+    return db_session_id
+
+
+def set_active_session(user_id: int, session_id: int) -> None:
+    ACTIVE_SESSION[user_id] = session_id
+    STORAGE.set_active_session(user_id, session_id)
+
+
+def current_key(user_id: int) -> tuple[int, int] | None:
+    session_id = active_session_id(user_id)
+    if session_id is None:
+        return None
+    return (user_id, session_id)
+
+
+def get_state(user_id: int) -> GameState | None:
+    key = current_key(user_id)
+    if key is None:
+        return None
+    if key not in USER_STATES:
+        state, waiting = STORAGE.load_session_state(key[0], key[1])
+        USER_STATES[key] = state
         if waiting:
-            WAITING_INPUT[user_id] = waiting
-    return USER_STATES[user_id]
+            WAITING_INPUT[key] = waiting
+    return USER_STATES[key]
 
 
 def persist_user(user_id: int) -> None:
-    state = USER_STATES.get(user_id)
+    key = current_key(user_id)
+    if key is None:
+        return
+    state = USER_STATES.get(key)
     if state is None:
         return
-    STORAGE.save_user_state(user_id, state, WAITING_INPUT.get(user_id))
+    STORAGE.save_session_state(key[0], key[1], state, WAITING_INPUT.get(key))
 
 
 def set_waiting(user_id: int, waiting: str | None) -> None:
+    key = current_key(user_id)
+    if key is None:
+        return
     if waiting is None:
-        WAITING_INPUT.pop(user_id, None)
+        WAITING_INPUT.pop(key, None)
     else:
-        WAITING_INPUT[user_id] = waiting
+        WAITING_INPUT[key] = waiting
     persist_user(user_id)
 
 
@@ -74,15 +106,35 @@ def menu_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("💬 Диалог", callback_data="menu:dialog")],
             [InlineKeyboardButton("🧠 Советник", callback_data="menu:advisor")],
             [InlineKeyboardButton("⏭ Конец хода", callback_data="menu:end_turn")],
+            [InlineKeyboardButton("🛑 Завершить сессию", callback_data="menu:end_session")],
         ]
     )
 
 
+def session_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    sessions = STORAGE.list_sessions(user_id)
+    rows = [[InlineKeyboardButton("🆕 Начать новую игру", callback_data="session:new")]]
+    for session in sessions:
+        sid = session["session_id"]
+        country = session.get("country") or "без страны"
+        mode = session.get("mode") or "без режима"
+        marker = " (активна)" if session.get("active") else ""
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"📂 Сессия #{sid}: {country} / {mode}{marker}",
+                    callback_data=f"session:open:{sid}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(rows)
+
+
 def menu_message(state: GameState, title: str) -> str:
-    if not state.actions:
+    if not state.current_turn.actions:
         return f"{title}\n\nДействия за ход: пока нет."
 
-    actions = "\n".join(f"{i}. {action}" for i, action in enumerate(state.actions, 1))
+    actions = "\n".join(f"{i}. {action.text}" for i, action in enumerate(state.current_turn.actions, 1))
     return f"{title}\n\nДействия за ход:\n{actions}"
 
 
@@ -96,16 +148,17 @@ def period_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
+async def continue_session_flow(message, user_id: int) -> None:
     state = get_state(user_id)
+    if state is None:
+        await message.reply_text("Сессия не выбрана.")
+        return
 
     if state.mode and state.model and state.country:
-        await update.message.reply_text(
+        await message.reply_text(
             menu_message(
                 state,
-                f"С возвращением! Продолжаем игру за {state.country} ({state.mode.value}, модель: {state.model}).\n"
-                "Выберите действие:",
+                f"Продолжаем игру за {state.country} ({state.mode.value}, модель: {state.model}).\nВыберите действие:",
             ),
             reply_markup=menu_keyboard(),
         )
@@ -119,47 +172,71 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             models = []
 
         if not models:
-            await update.message.reply_text(
+            await message.reply_text(
                 f"Не удалось получить список моделей из Ollama ({default_ollama_base_url()}/api/tags). "
                 "Проверьте, что Ollama запущена и модель установлена."
             )
             return
 
         AVAILABLE_MODELS[user_id] = models
-        await update.message.reply_text("Выберите AI-модель:", reply_markup=model_keyboard(models))
+        await message.reply_text("Выберите AI-модель:", reply_markup=model_keyboard(models))
         return
 
     if state.mode and state.model and not state.country:
         set_waiting(user_id, "country")
-        await update.message.reply_text("Введите страну (на русском или английском):")
+        await message.reply_text("Введите страну (на русском или английском):")
+        return
+
+    await message.reply_text("Выберите режим:", reply_markup=mode_keyboard())
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    sessions = STORAGE.list_sessions(user_id)
+    if not sessions:
+        await update.message.reply_text("У вас пока нет сессий. Начните новую игру:", reply_markup=session_keyboard(user_id))
         return
 
     await update.message.reply_text(
-        "Добро пожаловать в геополитическую AI-игру. Выберите режим:",
-        reply_markup=mode_keyboard(),
+        "Выберите действие: начать новую игру или открыть существующую сессию.",
+        reply_markup=session_keyboard(user_id),
     )
 
 
 async def new_game(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    STORAGE.delete_user_state(user_id)
-    USER_STATES[user_id] = GameState()
-    WAITING_INPUT.pop(user_id, None)
-    AVAILABLE_MODELS.pop(user_id, None)
-    persist_user(user_id)
-    await update.message.reply_text(
-        "Новая игра создана. Выберите режим:",
-        reply_markup=mode_keyboard(),
-    )
+    session_id = STORAGE.create_session(user_id, make_active=True)
+    set_active_session(user_id, session_id)
+    USER_STATES[(user_id, session_id)] = GameState()
+    WAITING_INPUT.pop((user_id, session_id), None)
+    await update.message.reply_text(f"Новая сессия #{session_id} создана. Выберите режим:", reply_markup=mode_keyboard())
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    state = get_state(user_id)
-
     data = query.data
+
+    if data == "session:new":
+        session_id = STORAGE.create_session(user_id, make_active=True)
+        set_active_session(user_id, session_id)
+        USER_STATES[(user_id, session_id)] = GameState()
+        WAITING_INPUT.pop((user_id, session_id), None)
+        await query.message.reply_text(f"Новая сессия #{session_id} создана. Выберите режим:", reply_markup=mode_keyboard())
+        return
+
+    if data.startswith("session:open:"):
+        session_id = int(data.split(":", 2)[2])
+        set_active_session(user_id, session_id)
+        await continue_session_flow(query.message, user_id)
+        return
+
+    state = get_state(user_id)
+    if state is None:
+        await query.message.reply_text("Сначала выберите или создайте сессию.", reply_markup=session_keyboard(user_id))
+        return
+
     if data.startswith("mode:"):
         mode_key = data.split(":", 1)[1]
         mapping = {
@@ -223,6 +300,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.message.reply_text("Задайте вопрос советнику:")
         return
 
+    if data == "menu:end_session":
+        set_waiting(user_id, None)
+        STORAGE.clear_active_session(user_id)
+        ACTIVE_SESSION.pop(user_id, None)
+        await query.message.reply_text(
+            "Сессия завершена. Выберите: начать новую игру или продолжить одну из сессий.",
+            reply_markup=session_keyboard(user_id),
+        )
+        return
+
     if data == "menu:end_turn":
         if not state.model:
             await query.message.reply_text("Сначала выберите модель через /start.")
@@ -264,8 +351,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     state = get_state(user_id)
+    if state is None:
+        await update.message.reply_text("Сначала выберите или создайте сессию через /start.")
+        return
+
     text = (update.message.text or "").strip()
-    waiting = WAITING_INPUT.get(user_id)
+    key = current_key(user_id)
+    waiting = WAITING_INPUT.get(key) if key else None
 
     if waiting == "country":
         state.country = text
@@ -298,7 +390,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if waiting == "advisor":
         set_waiting(user_id, None)
         ai = AIEngine(model=state.model or "qwen3:8b")
-        context = (
+        prompt_context = (
             f"Режим: {state.mode.value if state.mode else '-'}\n"
             f"Страна: {state.country or '-'}\n"
             f"Модель: {state.model or '-'}\n"
@@ -306,7 +398,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         loading_message = await update.message.reply_text("Генерация ответа советника...")
         try:
-            answer = await asyncio.to_thread(ai.ask_advisor, context)
+            answer = await asyncio.to_thread(ai.ask_advisor, prompt_context)
         except Exception as exc:
             logger.exception("Advisor error: %s", exc)
             await loading_message.delete()
@@ -326,7 +418,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(menu_message(state, "Продолжаем вашу игру. Выберите действие:"), reply_markup=menu_keyboard())
         return
 
-    await update.message.reply_text("Используйте /start для начала или продолжения игры.")
+    await update.message.reply_text("Используйте /start для выбора или создания сессии.")
 
 
 def main() -> None:
