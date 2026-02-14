@@ -26,10 +26,14 @@ class SqliteStorage:
                     session_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    session_name TEXT,
                     active INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+            existing_session_cols = [row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+            if "session_name" not in existing_session_cols:
+                conn.execute("ALTER TABLE sessions ADD COLUMN session_name TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS session_state (
@@ -51,7 +55,7 @@ class SqliteStorage:
 
     def create_session(self, user_id: int, make_active: bool = True) -> int:
         with self._connect() as conn:
-            cur = conn.execute("INSERT INTO sessions (user_id, active) VALUES (?, 0)", (user_id,))
+            cur = conn.execute("INSERT INTO sessions (user_id, active, session_name) VALUES (?, 0, ?)", (user_id, None))
             session_id = int(cur.lastrowid)
             conn.execute(
                 "INSERT INTO session_state (session_id, mode, country, model, waiting, actions_json, dialogs_json, world_state_json) VALUES (?, NULL, NULL, NULL, NULL, '[]', '[]', '{}')",
@@ -66,7 +70,7 @@ class SqliteStorage:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT s.session_id, s.active, st.mode, st.country, st.model
+                SELECT s.session_id, s.active, s.session_name, st.mode, st.country, st.model
                 FROM sessions s
                 LEFT JOIN session_state st ON st.session_id = s.session_id
                 WHERE s.user_id = ?
@@ -78,12 +82,26 @@ class SqliteStorage:
             {
                 "session_id": int(row[0]),
                 "active": bool(row[1]),
-                "mode": row[2],
-                "country": row[3],
-                "model": row[4],
+                "name": row[2],
+                "mode": row[3],
+                "country": row[4],
+                "model": row[5],
             }
             for row in rows
         ]
+
+
+    def set_session_name(self, user_id: int, session_id: int, name: str) -> None:
+        clean = name.strip()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE sessions SET session_name = ? WHERE user_id = ? AND session_id = ?",
+                (clean or None, user_id, session_id),
+            )
+
+    def delete_session(self, user_id: int, session_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM sessions WHERE user_id = ? AND session_id = ?", (user_id, session_id))
 
     def get_active_session_id(self, user_id: int) -> int | None:
         with self._connect() as conn:

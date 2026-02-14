@@ -38,3 +38,16 @@ def test_list_and_activate_sessions(tmp_path):
 
     storage.set_active_session(1, first)
     assert storage.get_active_session_id(1) == first
+
+
+def test_session_rename_and_delete(tmp_path):
+    db = tmp_path / "historia.sqlite3"
+    storage = SqliteStorage(str(db))
+
+    session_id = storage.create_session(7)
+    storage.set_session_name(7, session_id, "Моя кампания")
+    sessions = storage.list_sessions(7)
+    assert sessions[0]["name"] == "Моя кампания"
+
+    storage.delete_session(7, session_id)
+    assert storage.list_sessions(7) == []

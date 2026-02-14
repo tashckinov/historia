@@ -36,6 +36,7 @@ WORLD_STATES: Dict[Tuple[int, int], WorldState] = {}
 WAITING_INPUT: Dict[Tuple[int, int], str] = {}
 AVAILABLE_MODELS: Dict[int, List[str]] = {}
 ACTIVE_SESSION: Dict[int, int] = {}
+RENAME_TARGET: Dict[int, int] = {}
 STORAGE = SqliteStorage(os.environ.get("HISTORIA_DB_PATH", "historia.sqlite3"))
 
 
@@ -134,19 +135,32 @@ def session_keyboard(user_id: int) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton("🆕 Начать новую игру", callback_data="session:new")]]
     for session in sessions:
         sid = session["session_id"]
+        name = session.get("name") or f"Сессия #{sid}"
         country = session.get("country") or "без страны"
         mode = session.get("mode") or "без режима"
         marker = " (активна)" if session.get("active") else ""
         rows.append(
             [
                 InlineKeyboardButton(
-                    f"📂 Сессия #{sid}: {country} / {mode}{marker}",
+                    f"📂 {name}: {country} / {mode}{marker}",
                     callback_data=f"session:open:{sid}",
                 )
             ]
         )
     return InlineKeyboardMarkup(rows)
 
+
+
+
+def session_manage_keyboard(session_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("▶️ Продолжить", callback_data=f"session:continue:{session_id}")],
+            [InlineKeyboardButton("✏️ Переименовать", callback_data=f"session:rename:{session_id}")],
+            [InlineKeyboardButton("🗑 Удалить", callback_data=f"session:delete:{session_id}")],
+            [InlineKeyboardButton("⬅️ Назад к списку", callback_data="session:back")],
+        ]
+    )
 
 def menu_message(state: GameState, title: str) -> str:
     if not state.current_turn.actions:
@@ -248,8 +262,36 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data.startswith("session:open:"):
         session_id = int(data.split(":", 2)[2])
+        await query.message.reply_text(
+            f"Сессия #{session_id}. Выберите действие:",
+            reply_markup=session_manage_keyboard(session_id),
+        )
+        return
+
+    if data == "session:back":
+        await query.message.reply_text("Выберите сессию:", reply_markup=session_keyboard(user_id))
+        return
+
+    if data.startswith("session:continue:"):
+        session_id = int(data.split(":", 2)[2])
         set_active_session(user_id, session_id)
         await continue_session_flow(query.message, user_id)
+        return
+
+    if data.startswith("session:rename:"):
+        session_id = int(data.split(":", 2)[2])
+        RENAME_TARGET[user_id] = session_id
+        await query.message.reply_text("Введите новое название сессии:")
+        return
+
+    if data.startswith("session:delete:"):
+        session_id = int(data.split(":", 2)[2])
+        STORAGE.delete_session(user_id, session_id)
+        ACTIVE_SESSION.pop(user_id, None)
+        USER_STATES.pop((user_id, session_id), None)
+        WORLD_STATES.pop((user_id, session_id), None)
+        WAITING_INPUT.pop((user_id, session_id), None)
+        await query.message.reply_text("Сессия удалена.", reply_markup=session_keyboard(user_id))
         return
 
     state = get_state(user_id)
@@ -379,12 +421,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
+    text = (update.message.text or "").strip()
+
+    rename_session_id = RENAME_TARGET.pop(user_id, None)
+    if rename_session_id is not None:
+        STORAGE.set_session_name(user_id, rename_session_id, text)
+        await update.message.reply_text("Сессия переименована.", reply_markup=session_manage_keyboard(rename_session_id))
+        return
+
     state = get_state(user_id)
     if state is None:
         await update.message.reply_text("Сначала выберите или создайте сессию через /start.")
         return
 
-    text = (update.message.text or "").strip()
     key = current_key(user_id)
     waiting = WAITING_INPUT.get(key) if key else None
 
