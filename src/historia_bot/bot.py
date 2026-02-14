@@ -5,7 +5,7 @@ import logging
 import os
 from typing import Dict, List, Tuple
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -125,7 +125,6 @@ def menu_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("💬 Диалог", callback_data="menu:dialog")],
             [InlineKeyboardButton("🧠 Советник", callback_data="menu:advisor")],
             [InlineKeyboardButton("⏭ Конец хода", callback_data="menu:end_turn")],
-            [InlineKeyboardButton("🛑 Завершить сессию", callback_data="menu:end_session")],
         ]
     )
 
@@ -162,6 +161,14 @@ def session_manage_keyboard(session_id: int) -> InlineKeyboardMarkup:
         ]
     )
 
+def quick_actions_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("🛑 Завершить сессию")]],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
 def menu_message(state: GameState, title: str) -> str:
     if not state.current_turn.actions:
         return f"{title}\n\nВаши действия — это решения вашей страны, не прямое управление чужими странами.\nДействия за ход: пока нет."
@@ -180,6 +187,12 @@ def period_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+
+
+async def send_menu_message(message, text: str) -> None:
+    await message.reply_text(text, reply_markup=menu_keyboard())
+    await message.reply_text("Быстрая кнопка:", reply_markup=quick_actions_keyboard())
+
 async def continue_session_flow(message, user_id: int) -> None:
     state = get_state(user_id)
     if state is None:
@@ -187,12 +200,12 @@ async def continue_session_flow(message, user_id: int) -> None:
         return
 
     if state.mode and state.model and state.country:
-        await message.reply_text(
+        await send_menu_message(
+            message,
             menu_message(
                 state,
                 f"Продолжаем игру за {state.country} ({state.mode.value}, модель: {state.model}).\nВыберите действие:",
             ),
-            reply_markup=menu_keyboard(),
         )
         return
 
@@ -360,16 +373,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.message.reply_text("Задайте вопрос советнику:")
         return
 
-    if data == "menu:end_session":
-        set_waiting(user_id, None)
-        STORAGE.clear_active_session(user_id)
-        ACTIVE_SESSION.pop(user_id, None)
-        await query.message.reply_text(
-            "Сессия завершена. Выберите: начать новую игру или продолжить одну из сессий.",
-            reply_markup=session_keyboard(user_id),
-        )
-        return
-
     if data == "menu:end_turn":
         if not state.model:
             await query.message.reply_text("Сначала выберите модель через /start.")
@@ -416,12 +419,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         state.reset_turn()
         persist_user(user_id)
-        await query.message.reply_text(menu_message(state, "Ход завершён. Следующий ход:"), reply_markup=menu_keyboard())
+        await send_menu_message(query.message, menu_message(state, "Ход завершён. Следующий ход:"))
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     text = (update.message.text or "").strip()
+
+    if text == "🛑 Завершить сессию":
+        key = current_key(user_id)
+        if key is None:
+            await update.message.reply_text("Активная сессия не выбрана.", reply_markup=session_keyboard(user_id))
+            return
+        set_waiting(user_id, None)
+        STORAGE.clear_active_session(user_id)
+        ACTIVE_SESSION.pop(user_id, None)
+        await update.message.reply_text(
+            "Сессия завершена. Выберите: начать новую игру или продолжить одну из сессий.",
+            reply_markup=session_keyboard(user_id),
+        )
+        return
 
     rename_session_id = RENAME_TARGET.pop(user_id, None)
     if rename_session_id is not None:
@@ -441,9 +458,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         state.country = text
         set_waiting(user_id, None)
         persist_user(user_id)
-        await update.message.reply_text(
+        await send_menu_message(
+            update.message,
             menu_message(state, f"Вы играете за: {state.country}. Модель: {state.model}. Выберите действие:"),
-            reply_markup=menu_keyboard(),
         )
         return
 
@@ -471,12 +488,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not ok:
             await update.message.reply_text("Лимит действий за ход достигнут (15).")
         elif validation.is_partial:
-            await update.message.reply_text(
-                menu_message(state, f"Действие частично принято: {validation.reason}"),
-                reply_markup=menu_keyboard(),
-            )
+            await send_menu_message(update.message, menu_message(state, f"Действие частично принято: {validation.reason}"))
         else:
-            await update.message.reply_text(menu_message(state, "Действие добавлено."), reply_markup=menu_keyboard())
+            await send_menu_message(update.message, menu_message(state, "Действие добавлено."))
         return
 
     if waiting and waiting.startswith("dialog:"):
@@ -484,7 +498,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         state.add_dialog(partner, text)
         set_waiting(user_id, None)
         persist_user(user_id)
-        await update.message.reply_text(menu_message(state, "Диалог сохранён."), reply_markup=menu_keyboard())
+        await send_menu_message(update.message, menu_message(state, "Диалог сохранён."))
         return
 
     if waiting == "advisor":
@@ -519,10 +533,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             parse_mode="HTML",
             reply_markup=menu_keyboard(),
         )
+        await update.message.reply_text("Быстрая кнопка:", reply_markup=quick_actions_keyboard())
         return
 
     if state.mode and state.model and state.country:
-        await update.message.reply_text(menu_message(state, "Продолжаем вашу игру. Выберите действие:"), reply_markup=menu_keyboard())
+        await send_menu_message(update.message, menu_message(state, "Продолжаем вашу игру. Выберите действие:"))
         return
 
     await update.message.reply_text("Используйте /start для выбора или создания сессии.")
