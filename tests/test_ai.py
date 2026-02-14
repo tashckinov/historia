@@ -36,3 +36,13 @@ def test_request_timeout_seconds_from_env(monkeypatch):
 def test_request_timeout_seconds_fallback_on_invalid(monkeypatch):
     monkeypatch.setenv("OLLAMA_REQUEST_TIMEOUT", "abc")
     assert request_timeout_seconds() == 120.0
+
+
+def test_parse_articles_drops_empty_articles() -> None:
+    raw = '{"articles":[{"title":"","description":""}]}'
+    assert _parse_articles(raw) == []
+
+
+def test_parse_articles_keeps_non_empty_articles_only() -> None:
+    raw = '{"articles":[{"title":"","description":""},{"title":"A","description":""}]}'
+    assert _parse_articles(raw) == [{"title": "A", "description": ""}]

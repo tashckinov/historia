@@ -102,14 +102,17 @@ def _parse_articles(raw: str) -> List[Dict[str, Any]]:
         for item in articles:
             if not isinstance(item, dict):
                 continue
-            title = item.get("title")
-            description = item.get("description")
-            normalized.append(
-                {
-                    "title": str(title).strip() if title is not None else "",
-                    "description": str(description).strip() if description is not None else "",
-                }
-            )
+            title = str(item.get("title") or "").strip()
+            description = str(item.get("description") or "").strip()
+
+            # Drop empty or placeholder-only articles so we don't send fake single-news messages.
+            if not title and not description:
+                continue
+
+            normalized.append({"title": title, "description": description})
+
+        if not normalized:
+            return []
         return normalized[:15]
 
     return []
