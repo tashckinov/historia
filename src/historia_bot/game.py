@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import random
 from enum import Enum
 from typing import List
 
@@ -307,6 +308,41 @@ def validate_player_action(player_country: str, action_text: str, world_state: W
     return ActionValidationResult(True, "", text)
 
 
+
+
+def _random_events_range_by_period(period: str) -> tuple[int, int]:
+    mapping = {
+        "1 неделя": (0, 1),
+        "1 месяц": (0, 2),
+        "3 месяца": (1, 3),
+        "6 месяцев": (1, 3),
+        "1 год": (2, 3),
+    }
+    return mapping.get(period, (0, 2))
+
+
+def plan_event_counts(state: GameState, period: str, rng: random.Random | None = None) -> tuple[int, int, int]:
+    actions_count = len(state.current_turn.actions)
+    dialogs_count = len(state.current_turn.dialogs)
+
+    period_weight = {
+        "1 неделя": 1.0,
+        "1 месяц": 1.2,
+        "3 месяца": 1.5,
+        "6 месяцев": 1.8,
+        "1 год": 2.2,
+    }.get(period, 1.2)
+
+    player_signal = actions_count + dialogs_count
+    player_events = max(1, min(12, int(round(player_signal * period_weight)) if player_signal else 1))
+
+    rand_min, rand_max = _random_events_range_by_period(period)
+    chooser = rng or random
+    random_events = chooser.randint(rand_min, rand_max)
+
+    total_events = max(1, min(15, player_events + random_events))
+    return player_events, random_events, total_events
+
 def build_world_update_prompt(state: GameState, period: str, world_state: WorldState | None = None) -> str:
     actions = "\n".join(f"- {a.text}" for a in state.current_turn.actions) or "- Нет действий"
     dialogs = (
@@ -320,6 +356,7 @@ def build_world_update_prompt(state: GameState, period: str, world_state: WorldS
         if any(region.lower() in a.text.lower() for a in state.current_turn.actions)
     ]
     world_state_slice = active_world_state.summary_for_country(state.country or "", mentioned_regions)
+    player_events, random_events, total_events = plan_event_counts(state, period)
     return f"""
 Ты — симулятор мировой геополитики в текстовой игре.
 
@@ -341,6 +378,11 @@ def build_world_update_prompt(state: GameState, period: str, world_state: WorldS
 Диалоги игрока за период:
 {dialogs}
 
+План количества событий на этот ход:
+- События на основе действий/диалогов: {player_events}
+- Случайные мировые события: {random_events} (зависит от срока перемотки)
+- Итого статей к генерации: {total_events}
+
 Сгенерируй последствия в формате JSON:
 {{
   "articles": [
@@ -359,9 +401,10 @@ def build_world_update_prompt(state: GameState, period: str, world_state: WorldS
 - Если действие отклонено или нереализуемо, отрази это как отдельное событие/статью (например: «инициатива отклонена»), а не как успешную передачу территории.
 
 Правила вывода:
-1) Верни от 1 до 15 статей в зависимости от насыщенности действий.
+1) Сгенерируй ровно {total_events} статей (не меньше и не больше).
 2) Каждая статья должна быть реалистичной, связанной с действиями/диалогами и мировыми реакциями.
 3) В описании учитывай экономику, дипломатию, безопасность, внутреннюю политику, международные альянсы.
 4) Пиши на русском языке.
-5) Верни ТОЛЬКО JSON без markdown.
+5) 0–3 статьи должны быть про случайные мировые события, не связанные напрямую с игроком (в пределах рассчитанного {random_events}).
+6) Верни ТОЛЬКО JSON без markdown.
 """.strip()
