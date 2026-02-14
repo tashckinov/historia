@@ -54,6 +54,21 @@ export TELEGRAM_BOT_TOKEN="..."
 python -m historia_bot.bot
 ```
 
+
+### Быстрый разворот окружения на Windows (PowerShell)
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e .
+$env:TELEGRAM_BOT_TOKEN="<your_token>"
+# опционально:
+# $env:OLLAMA_BASE_URL="http://localhost:11434"
+# $env:OLLAMA_REQUEST_TIMEOUT="180"
+python -m historia_bot.bot
+```
+
 ## Структура
 - `src/historia_bot/game.py` — состояние игры, лимиты, сбор промпта.
 - `src/historia_bot/ai.py` — интеграция с Ollama API (`/api/tags`, `/api/chat`) и выбор адреса для WSL/host.
