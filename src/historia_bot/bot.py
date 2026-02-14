@@ -179,6 +179,7 @@ def menu_message(state: GameState, title: str) -> str:
 
 def dialog_keyboard() -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(partner, callback_data=f"dialog:{partner}")] for partner in DIALOG_PARTNERS]
+    rows.append([InlineKeyboardButton("✍️ Другая страна/блок", callback_data="dialog:other")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -191,7 +192,6 @@ def period_keyboard() -> InlineKeyboardMarkup:
 
 async def send_menu_message(message, text: str) -> None:
     await message.reply_text(text, reply_markup=menu_keyboard())
-    await message.reply_text("Быстрая кнопка:", reply_markup=quick_actions_keyboard())
 
 async def continue_session_flow(message, user_id: int) -> None:
     state = get_state(user_id)
@@ -229,7 +229,7 @@ async def continue_session_flow(message, user_id: int) -> None:
 
     if state.mode and state.model and not state.country:
         set_waiting(user_id, "country")
-        await message.reply_text("Введите страну (на русском или английском):")
+        await message.reply_text("Введите страну (на русском или английском):", reply_markup=quick_actions_keyboard())
         return
 
     await message.reply_text("Выберите режим:", reply_markup=mode_keyboard())
@@ -347,22 +347,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         state.model = models[model_index]
         persist_user(user_id)
         set_waiting(user_id, "country")
-        await query.message.reply_text(f"Выбрана модель: {state.model}\nВведите страну (на русском или английском):")
+        await query.message.reply_text(f"Выбрана модель: {state.model}\nВведите страну (на русском или английском):", reply_markup=quick_actions_keyboard())
         return
 
     if data == "menu:add_action":
         set_waiting(user_id, "action")
-        await query.message.reply_text("Введите действие вашей страны (пример: предложить / начать переговоры / потребовать / поддержать):")
+        await query.message.reply_text("Введите действие вашей страны (пример: предложить / начать переговоры / потребовать / поддержать):", reply_markup=quick_actions_keyboard())
         return
 
     if data == "menu:dialog":
         await query.message.reply_text("С кем хотите провести диалог?", reply_markup=dialog_keyboard())
+        await query.message.reply_text("Можно выбрать любую страну/блок.", reply_markup=quick_actions_keyboard())
         return
 
     if data.startswith("dialog:"):
         partner = data.split(":", 1)[1]
+        if partner == "other":
+            set_waiting(user_id, "dialog_partner")
+            await query.message.reply_text("Введите любую страну или блок для диалога:", reply_markup=quick_actions_keyboard())
+            return
         set_waiting(user_id, f"dialog:{partner}")
-        await query.message.reply_text(f"Введите сообщение для {partner}:")
+        await query.message.reply_text(f"Введите сообщение для {partner}:", reply_markup=quick_actions_keyboard())
         return
 
     if data == "menu:advisor":
@@ -370,7 +375,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.reply_text("Сначала выберите модель через /start.")
             return
         set_waiting(user_id, "advisor")
-        await query.message.reply_text("Задайте вопрос советнику:")
+        await query.message.reply_text("Задайте вопрос советнику:", reply_markup=quick_actions_keyboard())
         return
 
     if data == "menu:end_turn":
@@ -464,6 +469,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
+    if waiting == "dialog_partner":
+        partner = text
+        set_waiting(user_id, f"dialog:{partner}")
+        await update.message.reply_text(f"Введите сообщение для {partner}:", reply_markup=quick_actions_keyboard())
+        return
+
     if waiting == "action":
         validation = validate_player_action(
             player_country=state.country or "",
@@ -533,7 +544,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             parse_mode="HTML",
             reply_markup=menu_keyboard(),
         )
-        await update.message.reply_text("Быстрая кнопка:", reply_markup=quick_actions_keyboard())
         return
 
     if state.mode and state.model and state.country:
