@@ -1,0 +1,14 @@
+[project]
+name = "historia-bot"
+version = "0.1.0"
+description = "Telegram bot for AI geopolitical game"
+requires-python = ">=3.11"
+dependencies = [
+  "python-telegram-bot>=21.0,<22.0"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

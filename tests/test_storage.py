@@ -1,0 +1,54 @@
+from historia_bot.game import GameMode, GameState
+from historia_bot.storage import SqliteStorage
+from historia_bot.world_state import WorldState
+
+
+def test_storage_roundtrip_with_sessions(tmp_path):
+    db = tmp_path / "historia.sqlite3"
+    storage = SqliteStorage(str(db))
+
+    session_id = storage.create_session(123)
+    state = GameState(mode=GameMode.HISTORICAL_SIMULATION, country="Poland", model="qwen3:8b")
+    state.add_action("Подписать оборонный пакт")
+    state.add_dialog("НАТО", "Усилить присутствие")
+    world_state = WorldState(territory_owner={"Montevideo": "Uruguay"}, country_regions={"Uruguay": ["Montevideo"]})
+    storage.save_session_state(123, session_id, state, "advisor", world_state)
+
+    loaded_state, loaded_waiting, loaded_world_state = storage.load_session_state(123, session_id)
+    assert loaded_state.mode == GameMode.HISTORICAL_SIMULATION
+    assert loaded_state.country == "Poland"
+    assert loaded_state.model == "qwen3:8b"
+    assert loaded_waiting == "advisor"
+    assert loaded_state.current_turn.actions[0].text == "Подписать оборонный пакт"
+    assert loaded_state.current_turn.dialogs[0].partner == "НАТО"
+    assert loaded_world_state.territory_owner["Montevideo"] == "Uruguay"
+    assert loaded_world_state.turns_without_random_events == 0
+
+
+def test_list_and_activate_sessions(tmp_path):
+    db = tmp_path / "historia.sqlite3"
+    storage = SqliteStorage(str(db))
+
+    first = storage.create_session(1)
+    second = storage.create_session(1)
+    sessions = storage.list_sessions(1)
+
+    assert len(sessions) == 2
+    assert sessions[0]["session_id"] == second
+    assert sessions[0]["active"] is True
+
+    storage.set_active_session(1, first)
+    assert storage.get_active_session_id(1) == first
+
+
+def test_session_rename_and_delete(tmp_path):
+    db = tmp_path / "historia.sqlite3"
+    storage = SqliteStorage(str(db))
+
+    session_id = storage.create_session(7)
+    storage.set_session_name(7, session_id, "Моя кампания")
+    sessions = storage.list_sessions(7)
+    assert sessions[0]["name"] == "Моя кампания"
+
+    storage.delete_session(7, session_id)
+    assert storage.list_sessions(7) == []
