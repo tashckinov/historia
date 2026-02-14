@@ -150,10 +150,10 @@ def session_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 def menu_message(state: GameState, title: str) -> str:
     if not state.current_turn.actions:
-        return f"{title}\n\nДействия за ход: пока нет."
+        return f"{title}\n\nВаши действия — это решения вашей страны, не прямое управление чужими странами.\nДействия за ход: пока нет."
 
     actions = "\n".join(f"{i}. {action.text}" for i, action in enumerate(state.current_turn.actions, 1))
-    return f"{title}\n\nДействия за ход:\n{actions}"
+    return f"{title}\n\nВаши действия — это решения вашей страны, не прямое управление чужими странами.\nДействия за ход:\n{actions}"
 
 
 def dialog_keyboard() -> InlineKeyboardMarkup:
@@ -297,7 +297,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data == "menu:add_action":
         set_waiting(user_id, "action")
-        await query.message.reply_text("Введите действие вашей страны:")
+        await query.message.reply_text("Введите действие вашей страны (пример: предложить / начать переговоры / потребовать / поддержать):")
         return
 
     if data == "menu:dialog":
@@ -408,7 +408,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         if not validation.is_valid:
             await update.message.reply_text(
-                f"Действие отклонено: {validation.reason}",
+                "Действие отклонено: "
+                f"{validation.reason}\n"
+                "Попробуйте так:\n"
+                "• предложить мирные переговоры по спорному вопросу;\n"
+                "• потребовать обсуждение в международном формате (ООН/региональный блок).",
                 reply_markup=menu_keyboard(),
             )
             return
