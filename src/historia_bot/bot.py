@@ -26,11 +26,13 @@ from historia_bot.game import (
     validate_player_action,
 )
 from historia_bot.storage import SqliteStorage
+from historia_bot.world_state import WorldState
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 USER_STATES: Dict[Tuple[int, int], GameState] = {}
+WORLD_STATES: Dict[Tuple[int, int], WorldState] = {}
 WAITING_INPUT: Dict[Tuple[int, int], str] = {}
 AVAILABLE_MODELS: Dict[int, List[str]] = {}
 ACTIVE_SESSION: Dict[int, int] = {}
@@ -64,12 +66,23 @@ def get_state(user_id: int) -> GameState | None:
     if key is None:
         return None
     if key not in USER_STATES:
-        state, waiting = STORAGE.load_session_state(key[0], key[1])
+        state, waiting, world_state = STORAGE.load_session_state(key[0], key[1])
         USER_STATES[key] = state
+        WORLD_STATES[key] = world_state
         if waiting:
             WAITING_INPUT[key] = waiting
     return USER_STATES[key]
 
+
+
+
+def get_world_state(user_id: int) -> WorldState:
+    key = current_key(user_id)
+    if key is None:
+        return WorldState()
+    if key not in WORLD_STATES:
+        _ = get_state(user_id)
+    return WORLD_STATES.get(key, WorldState())
 
 def persist_user(user_id: int) -> None:
     key = current_key(user_id)
@@ -78,7 +91,7 @@ def persist_user(user_id: int) -> None:
     state = USER_STATES.get(key)
     if state is None:
         return
-    STORAGE.save_session_state(key[0], key[1], state, WAITING_INPUT.get(key))
+    STORAGE.save_session_state(key[0], key[1], state, WAITING_INPUT.get(key), WORLD_STATES.get(key, WorldState()))
 
 
 def set_waiting(user_id: int, waiting: str | None) -> None:
@@ -213,6 +226,7 @@ async def new_game(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     session_id = STORAGE.create_session(user_id, make_active=True)
     set_active_session(user_id, session_id)
     USER_STATES[(user_id, session_id)] = GameState()
+    WORLD_STATES[(user_id, session_id)] = WorldState()
     WAITING_INPUT.pop((user_id, session_id), None)
     await update.message.reply_text(f"Новая сессия #{session_id} создана. Выберите режим:", reply_markup=mode_keyboard())
 
@@ -227,6 +241,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         session_id = STORAGE.create_session(user_id, make_active=True)
         set_active_session(user_id, session_id)
         USER_STATES[(user_id, session_id)] = GameState()
+        WORLD_STATES[(user_id, session_id)] = WorldState()
         WAITING_INPUT.pop((user_id, session_id), None)
         await query.message.reply_text(f"Новая сессия #{session_id} создана. Выберите режим:", reply_markup=mode_keyboard())
         return
@@ -326,7 +341,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data.startswith("period:"):
         period = data.split(":", 1)[1]
         ai = AIEngine(model=state.model or "qwen3:8b")
-        prompt = build_world_update_prompt(state, period)
+        world_state = get_world_state(user_id)
+        prompt = build_world_update_prompt(state, period, world_state=world_state)
 
         loading_message = await query.message.reply_text("Генерация мировых событий...")
         try:
@@ -352,6 +368,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 title = article.get("title", f"Событие {i}")
                 description = article.get("description", "")
                 await query.message.reply_text(f"📰 {title}\n{description}")
+
+        world_state = get_world_state(user_id)
+        world_state.apply_confirmed_updates(articles)
 
         state.reset_turn()
         persist_user(user_id)
@@ -383,7 +402,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         validation = validate_player_action(
             player_country=state.country or "",
             action_text=text,
-            world_facts={},
+            world_state=get_world_state(user_id),
         )
         set_waiting(user_id, None)
 

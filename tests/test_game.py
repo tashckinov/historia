@@ -1,4 +1,5 @@
 from historia_bot.game import GameMode, GameState, build_world_update_prompt, validate_player_action
+from historia_bot.world_state import WorldState
 
 
 def test_action_limit():
@@ -24,13 +25,14 @@ def test_prompt_contains_data():
     assert "feasibility:" in prompt
     assert "outcome:" in prompt
     assert "Невозможные действия не считаются совершившимися фактами" in prompt
+    assert "Срез WorldState для страны игрока" in prompt
 
 
 def test_validate_action_rejects_third_party_treaty() -> None:
     result = validate_player_action(
         player_country="Уругвай",
         action_text="Подписать договор от имени Аргентины с Бразилией",
-        world_facts={},
+        world_state=None,
     )
     assert result.is_valid is False
     assert "третьих стран" in result.reason
@@ -40,7 +42,7 @@ def test_validate_action_normalizes_impossible_territorial_transfer() -> None:
     result = validate_player_action(
         player_country="Уругвай",
         action_text="Передать территорию Аргентины Бразилии",
-        world_facts={},
+        world_state=None,
     )
     assert result.is_valid is True
     assert result.is_partial is True
@@ -51,7 +53,18 @@ def test_validate_action_rejects_border_change_between_foreign_states() -> None:
     result = validate_player_action(
         player_country="Уругвай",
         action_text="Изменить границы между Аргентиной и Бразилией",
-        world_facts={},
+        world_state=None,
     )
     assert result.is_valid is False
     assert "изменение границ" in result.reason
+
+
+def test_validate_action_uses_world_state_ownership() -> None:
+    world_state = WorldState(country_regions={"Уругвай": ["Монтевидео"]})
+    result = validate_player_action(
+        player_country="Уругвай",
+        action_text="Уступить территорию Буэнос-Айреса Бразилии",
+        world_state=world_state,
+    )
+    assert result.is_valid is False
+    assert "не владеет" in result.reason

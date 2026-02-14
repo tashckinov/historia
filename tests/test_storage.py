@@ -1,5 +1,6 @@
 from historia_bot.game import GameMode, GameState
 from historia_bot.storage import SqliteStorage
+from historia_bot.world_state import WorldState
 
 
 def test_storage_roundtrip_with_sessions(tmp_path):
@@ -10,15 +11,17 @@ def test_storage_roundtrip_with_sessions(tmp_path):
     state = GameState(mode=GameMode.HISTORICAL_SIMULATION, country="Poland", model="qwen3:8b")
     state.add_action("Подписать оборонный пакт")
     state.add_dialog("НАТО", "Усилить присутствие")
-    storage.save_session_state(123, session_id, state, "advisor")
+    world_state = WorldState(territory_owner={"Montevideo": "Uruguay"}, country_regions={"Uruguay": ["Montevideo"]})
+    storage.save_session_state(123, session_id, state, "advisor", world_state)
 
-    loaded_state, loaded_waiting = storage.load_session_state(123, session_id)
+    loaded_state, loaded_waiting, loaded_world_state = storage.load_session_state(123, session_id)
     assert loaded_state.mode == GameMode.HISTORICAL_SIMULATION
     assert loaded_state.country == "Poland"
     assert loaded_state.model == "qwen3:8b"
     assert loaded_waiting == "advisor"
     assert loaded_state.current_turn.actions[0].text == "Подписать оборонный пакт"
     assert loaded_state.current_turn.dialogs[0].partner == "НАТО"
+    assert loaded_world_state.territory_owner["Montevideo"] == "Uruguay"
 
 
 def test_list_and_activate_sessions(tmp_path):

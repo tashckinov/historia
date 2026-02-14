@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List
 
+from historia_bot.world_state import WorldState
+
 
 class GameMode(str, Enum):
     HISTORICAL_SIMULATION = "Историческая симуляция (с 27.08.2025)"
@@ -251,7 +253,7 @@ class ActionValidationResult:
     is_partial: bool = False
 
 
-def validate_player_action(player_country: str, action_text: str, world_facts: dict | None = None) -> ActionValidationResult:
+def validate_player_action(player_country: str, action_text: str, world_state: WorldState | None = None) -> ActionValidationResult:
     text = action_text.strip()
     if not text:
         return ActionValidationResult(False, "Действие не может быть пустым.", text)
@@ -262,8 +264,8 @@ def validate_player_action(player_country: str, action_text: str, world_facts: d
 
     lowered = text.lower()
     country_lower = country.lower()
-    facts = world_facts or {}
-    owned_territories = [str(x).strip().lower() for x in facts.get("owned_territories", []) if str(x).strip()]
+    state = world_state or WorldState()
+    owned_territories = [region.strip().lower() for region in state.country_regions.get(country, []) if region.strip()]
 
     territorial_keywords = ("передать", "уступить", "отдать", "аннекс", "cede", "transfer", "annex")
     treaty_keywords = ("договор", "соглашени", "treaty", "agreement", "подпис")
@@ -305,12 +307,19 @@ def validate_player_action(player_country: str, action_text: str, world_facts: d
     return ActionValidationResult(True, "", text)
 
 
-def build_world_update_prompt(state: GameState, period: str) -> str:
+def build_world_update_prompt(state: GameState, period: str, world_state: WorldState | None = None) -> str:
     actions = "\n".join(f"- {a.text}" for a in state.current_turn.actions) or "- Нет действий"
     dialogs = (
         "\n".join(f"- {d.partner}: {d.message}" for d in state.current_turn.dialogs)
         or "- Нет диалогов"
     )
+    active_world_state = world_state or WorldState()
+    mentioned_regions = [
+        region
+        for region in active_world_state.territory_owner
+        if any(region.lower() in a.text.lower() for a in state.current_turn.actions)
+    ]
+    world_state_slice = active_world_state.summary_for_country(state.country or "", mentioned_regions)
     return f"""
 Ты — симулятор мировой геополитики в текстовой игре.
 
@@ -322,6 +331,9 @@ def build_world_update_prompt(state: GameState, period: str) -> str:
 - Страна игрока: {state.country or "Не выбрана"}
 - AI-модель: {state.model or "Не выбрана"}
 - Период перемотки: {period}
+
+Срез WorldState для страны игрока:
+{world_state_slice}
 
 Действия игрока за период:
 {actions}

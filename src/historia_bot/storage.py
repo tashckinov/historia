@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Tuple
 
 from historia_bot.game import DialogueEntry, GameMode, GameState, Turn, TurnAction
+from historia_bot.world_state import WorldState
 
 
 class SqliteStorage:
@@ -39,17 +40,21 @@ class SqliteStorage:
                     waiting TEXT,
                     actions_json TEXT NOT NULL DEFAULT '[]',
                     dialogs_json TEXT NOT NULL DEFAULT '[]',
+                    world_state_json TEXT NOT NULL DEFAULT '{}',
                     FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                 )
                 """
             )
+            existing_cols = [row[1] for row in conn.execute("PRAGMA table_info(session_state)").fetchall()]
+            if "world_state_json" not in existing_cols:
+                conn.execute("ALTER TABLE session_state ADD COLUMN world_state_json TEXT NOT NULL DEFAULT '{}'")
 
     def create_session(self, user_id: int, make_active: bool = True) -> int:
         with self._connect() as conn:
             cur = conn.execute("INSERT INTO sessions (user_id, active) VALUES (?, 0)", (user_id,))
             session_id = int(cur.lastrowid)
             conn.execute(
-                "INSERT INTO session_state (session_id, mode, country, model, waiting, actions_json, dialogs_json) VALUES (?, NULL, NULL, NULL, NULL, '[]', '[]')",
+                "INSERT INTO session_state (session_id, mode, country, model, waiting, actions_json, dialogs_json, world_state_json) VALUES (?, NULL, NULL, NULL, NULL, '[]', '[]', '{}')",
                 (session_id,),
             )
             if make_active:
@@ -94,11 +99,11 @@ class SqliteStorage:
         with self._connect() as conn:
             conn.execute("UPDATE sessions SET active = 0 WHERE user_id = ?", (user_id,))
 
-    def load_session_state(self, user_id: int, session_id: int) -> Tuple[GameState, str | None]:
+    def load_session_state(self, user_id: int, session_id: int) -> Tuple[GameState, str | None, WorldState]:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT st.mode, st.country, st.model, st.waiting, st.actions_json, st.dialogs_json
+                SELECT st.mode, st.country, st.model, st.waiting, st.actions_json, st.dialogs_json, st.world_state_json
                 FROM session_state st
                 JOIN sessions s ON s.session_id = st.session_id
                 WHERE s.user_id = ? AND s.session_id = ?
@@ -107,9 +112,9 @@ class SqliteStorage:
             ).fetchone()
 
         if row is None:
-            return GameState(), None
+            return GameState(), None, WorldState()
 
-        mode_raw, country, model, waiting, actions_raw, dialogs_raw = row
+        mode_raw, country, model, waiting, actions_raw, dialogs_raw, world_state_raw = row
         mode = None
         if isinstance(mode_raw, str):
             for candidate in GameMode:
@@ -139,20 +144,23 @@ class SqliteStorage:
                 and isinstance(item.get("message"), str)
             ],
         )
-        return state, waiting
+        world_state_payload = json.loads(world_state_raw) if world_state_raw else {}
+        world_state = WorldState.from_dict(world_state_payload if isinstance(world_state_payload, dict) else {})
+        return state, waiting, world_state
 
-    def save_session_state(self, user_id: int, session_id: int, state: GameState, waiting: str | None) -> None:
+    def save_session_state(self, user_id: int, session_id: int, state: GameState, waiting: str | None, world_state: WorldState | None = None) -> None:
         actions_json = json.dumps([{"text": a.text} for a in state.current_turn.actions], ensure_ascii=False)
         dialogs_json = json.dumps(
             [{"partner": d.partner, "message": d.message} for d in state.current_turn.dialogs],
             ensure_ascii=False,
         )
+        world_state_json = json.dumps((world_state or WorldState()).to_dict(), ensure_ascii=False)
         with self._connect() as conn:
             # keep relation ownership check in update where clause
             conn.execute(
                 """
                 UPDATE session_state
-                SET mode = ?, country = ?, model = ?, waiting = ?, actions_json = ?, dialogs_json = ?
+                SET mode = ?, country = ?, model = ?, waiting = ?, actions_json = ?, dialogs_json = ?, world_state_json = ?
                 WHERE session_id = ?
                 """,
                 (
@@ -162,23 +170,24 @@ class SqliteStorage:
                     waiting,
                     actions_json,
                     dialogs_json,
+                    world_state_json,
                     session_id,
                 ),
             )
             conn.execute("UPDATE sessions SET active = 1 WHERE user_id = ? AND session_id = ?", (user_id, session_id))
 
     # backward-compatible wrappers
-    def load_user_state(self, user_id: int) -> Tuple[GameState, str | None]:
+    def load_user_state(self, user_id: int) -> Tuple[GameState, str | None, WorldState]:
         session_id = self.get_active_session_id(user_id)
         if session_id is None:
-            return GameState(), None
+            return GameState(), None, WorldState()
         return self.load_session_state(user_id, session_id)
 
-    def save_user_state(self, user_id: int, state: GameState, waiting: str | None) -> None:
+    def save_user_state(self, user_id: int, state: GameState, waiting: str | None, world_state: WorldState | None = None) -> None:
         session_id = self.get_active_session_id(user_id)
         if session_id is None:
             session_id = self.create_session(user_id, make_active=True)
-        self.save_session_state(user_id, session_id, state, waiting)
+        self.save_session_state(user_id, session_id, state, waiting, world_state)
 
     def delete_user_state(self, user_id: int) -> None:
         with self._connect() as conn:
