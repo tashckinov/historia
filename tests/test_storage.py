@@ -22,6 +22,7 @@ def test_storage_roundtrip_with_sessions(tmp_path):
     assert loaded_state.current_turn.actions[0].text == "Подписать оборонный пакт"
     assert loaded_state.current_turn.dialogs[0].partner == "НАТО"
     assert loaded_world_state.territory_owner["Montevideo"] == "Uruguay"
+    assert loaded_world_state.turns_without_random_events == 0
 
 
 def test_list_and_activate_sessions(tmp_path):

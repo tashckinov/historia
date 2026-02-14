@@ -321,7 +321,7 @@ def _random_events_range_by_period(period: str) -> tuple[int, int]:
     return mapping.get(period, (0, 2))
 
 
-def plan_event_counts(state: GameState, period: str, rng: random.Random | None = None) -> tuple[int, int, int]:
+def plan_event_counts(state: GameState, period: str, world_state: WorldState | None = None, rng: random.Random | None = None) -> tuple[int, int, int]:
     actions_count = len(state.current_turn.actions)
     dialogs_count = len(state.current_turn.dialogs)
 
@@ -340,10 +340,14 @@ def plan_event_counts(state: GameState, period: str, rng: random.Random | None =
     chooser = rng or random
     random_events = chooser.randint(rand_min, rand_max)
 
+    turns_without_random = (world_state.turns_without_random_events if world_state else 0)
+    if turns_without_random >= 2:
+        random_events = max(1, random_events)
+
     total_events = max(1, min(15, player_events + random_events))
     return player_events, random_events, total_events
 
-def build_world_update_prompt(state: GameState, period: str, world_state: WorldState | None = None) -> str:
+def build_world_update_prompt(state: GameState, period: str, world_state: WorldState | None = None, planned_counts: tuple[int, int, int] | None = None) -> str:
     actions = "\n".join(f"- {a.text}" for a in state.current_turn.actions) or "- Нет действий"
     dialogs = (
         "\n".join(f"- {d.partner}: {d.message}" for d in state.current_turn.dialogs)
@@ -356,7 +360,10 @@ def build_world_update_prompt(state: GameState, period: str, world_state: WorldS
         if any(region.lower() in a.text.lower() for a in state.current_turn.actions)
     ]
     world_state_slice = active_world_state.summary_for_country(state.country or "", mentioned_regions)
-    player_events, random_events, total_events = plan_event_counts(state, period)
+    if planned_counts is None:
+        player_events, random_events, total_events = plan_event_counts(state, period, world_state=active_world_state)
+    else:
+        player_events, random_events, total_events = planned_counts
     return f"""
 Ты — симулятор мировой геополитики в текстовой игре.
 
@@ -368,6 +375,7 @@ def build_world_update_prompt(state: GameState, period: str, world_state: WorldS
 - Страна игрока: {state.country or "Не выбрана"}
 - AI-модель: {state.model or "Не выбрана"}
 - Период перемотки: {period}
+- Ходов без случайных мировых событий подряд: {active_world_state.turns_without_random_events}
 
 Срез WorldState для страны игрока:
 {world_state_slice}
@@ -406,5 +414,6 @@ def build_world_update_prompt(state: GameState, period: str, world_state: WorldS
 3) В описании учитывай экономику, дипломатию, безопасность, внутреннюю политику, международные альянсы.
 4) Пиши на русском языке.
 5) 0–3 статьи должны быть про случайные мировые события, не связанные напрямую с игроком (в пределах рассчитанного {random_events}).
-6) Верни ТОЛЬКО JSON без markdown.
+6) Если 2 хода подряд не было случайных мировых событий, в этом ходу обязательно добавь хотя бы 1 случайное событие.
+7) Верни ТОЛЬКО JSON без markdown.
 """.strip()

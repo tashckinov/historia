@@ -10,6 +10,7 @@ class WorldState:
     country_regions: dict[str, list[str]] = field(default_factory=dict)
     active_wars: list[tuple[str, str]] = field(default_factory=list)
     active_truces: list[tuple[str, str]] = field(default_factory=list)
+    turns_without_random_events: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -17,6 +18,7 @@ class WorldState:
             "country_regions": self.country_regions,
             "active_wars": [list(pair) for pair in self.active_wars],
             "active_truces": [list(pair) for pair in self.active_truces],
+            "turns_without_random_events": self.turns_without_random_events,
         }
 
     @classmethod
@@ -26,6 +28,7 @@ class WorldState:
         country_regions_raw = payload.get("country_regions", {})
         active_wars_raw = payload.get("active_wars", [])
         active_truces_raw = payload.get("active_truces", [])
+        turns_wo_random_raw = payload.get("turns_without_random_events", 0)
 
         territory_owner = {
             str(region).strip(): str(owner).strip()
@@ -41,11 +44,14 @@ class WorldState:
 
         active_wars = _normalize_pairs(active_wars_raw)
         active_truces = _normalize_pairs(active_truces_raw)
+        turns_wo_random = int(turns_wo_random_raw) if isinstance(turns_wo_random_raw, int | float) else 0
+        turns_wo_random = max(0, turns_wo_random)
         return cls(
             territory_owner=territory_owner,
             country_regions=country_regions,
             active_wars=active_wars,
             active_truces=active_truces,
+            turns_without_random_events=turns_wo_random,
         )
 
     def owner_of(self, region: str) -> str | None:
@@ -85,6 +91,12 @@ class WorldState:
                     self.active_truces.append(pair)
                 if pair in self.active_wars:
                     self.active_wars.remove(pair)
+
+    def note_random_events(self, random_events_count: int) -> None:
+        if random_events_count > 0:
+            self.turns_without_random_events = 0
+        else:
+            self.turns_without_random_events += 1
 
     def summary_for_country(self, country: str, regions_of_interest: list[str] | None = None) -> str:
         country = (country or "").strip()

@@ -23,6 +23,7 @@ from historia_bot.game import (
     GameMode,
     GameState,
     build_world_update_prompt,
+    plan_event_counts,
     validate_player_action,
 )
 from historia_bot.storage import SqliteStorage
@@ -392,7 +393,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         period = data.split(":", 1)[1]
         ai = AIEngine(model=state.model or "qwen3:8b")
         world_state = get_world_state(user_id)
-        prompt = build_world_update_prompt(state, period, world_state=world_state)
+        planned_counts = plan_event_counts(state, period, world_state=world_state)
+        prompt = build_world_update_prompt(state, period, world_state=world_state, planned_counts=planned_counts)
 
         loading_message = await query.message.reply_text("Генерация мировых событий...")
         try:
@@ -420,6 +422,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await query.message.reply_text(f"📰 {title}\n{description}")
 
         world_state = get_world_state(user_id)
+        world_state.note_random_events(planned_counts[1])
         world_state.apply_confirmed_updates(articles)
 
         state.reset_turn()

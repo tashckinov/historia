@@ -78,11 +78,18 @@ def test_plan_event_counts_depends_on_period_and_actions() -> None:
     state.add_action("A2")
     state.add_dialog("ЕС", "D1")
 
-    player_month, random_month, total_month = plan_event_counts(state, "1 месяц", rng=__import__("random").Random(1))
-    player_year, random_year, total_year = plan_event_counts(state, "1 год", rng=__import__("random").Random(1))
+    player_month, random_month, total_month = plan_event_counts(state, "1 месяц", world_state=WorldState(), rng=__import__("random").Random(1))
+    player_year, random_year, total_year = plan_event_counts(state, "1 год", world_state=WorldState(), rng=__import__("random").Random(1))
 
     assert player_year >= player_month
     assert 0 <= random_month <= 2
     assert 2 <= random_year <= 3
     assert 1 <= total_month <= 15
     assert 1 <= total_year <= 15
+
+
+def test_plan_event_counts_forces_random_after_three_turns_without_random() -> None:
+    state = GameState(mode=GameMode.HISTORICAL_SIMULATION, country="France", model="qwen3:8b")
+    ws = WorldState(turns_without_random_events=2)
+    _, random_events, _ = plan_event_counts(state, "1 месяц", world_state=ws, rng=__import__("random").Random(2))
+    assert random_events >= 1
