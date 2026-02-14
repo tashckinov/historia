@@ -20,6 +20,10 @@ def test_prompt_contains_data():
     assert "ЕС" in prompt
     assert "1 месяц" in prompt
     assert "Follow all historical events past the start date." in prompt
+    assert "intent:" in prompt
+    assert "feasibility:" in prompt
+    assert "outcome:" in prompt
+    assert "Невозможные действия не считаются совершившимися фактами" in prompt
 
 
 def test_validate_action_rejects_third_party_treaty() -> None:
