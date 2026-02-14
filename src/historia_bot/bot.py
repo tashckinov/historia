@@ -17,7 +17,14 @@ from telegram.ext import (
 
 from historia_bot.ai import AIEngine, AIRequestTimeoutError, default_ollama_base_url
 from historia_bot.formatting import format_advisor_message
-from historia_bot.game import DIALOG_PARTNERS, PERIOD_OPTIONS, GameMode, GameState, build_world_update_prompt
+from historia_bot.game import (
+    DIALOG_PARTNERS,
+    PERIOD_OPTIONS,
+    GameMode,
+    GameState,
+    build_world_update_prompt,
+    validate_player_action,
+)
 from historia_bot.storage import SqliteStorage
 
 logging.basicConfig(level=logging.INFO)
@@ -373,11 +380,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if waiting == "action":
-        ok = state.add_action(text)
+        validation = validate_player_action(
+            player_country=state.country or "",
+            action_text=text,
+            world_facts={},
+        )
         set_waiting(user_id, None)
+
+        if not validation.is_valid:
+            await update.message.reply_text(
+                f"Действие отклонено: {validation.reason}",
+                reply_markup=menu_keyboard(),
+            )
+            return
+
+        ok = state.add_action(validation.normalized_action)
         persist_user(user_id)
         if not ok:
             await update.message.reply_text("Лимит действий за ход достигнут (15).")
+        elif validation.is_partial:
+            await update.message.reply_text(
+                menu_message(state, f"Действие частично принято: {validation.reason}"),
+                reply_markup=menu_keyboard(),
+            )
         else:
             await update.message.reply_text(menu_message(state, "Действие добавлено."), reply_markup=menu_keyboard())
         return

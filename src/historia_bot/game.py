@@ -243,6 +243,68 @@ class GameState:
         self.current_turn = Turn()
 
 
+@dataclass
+class ActionValidationResult:
+    is_valid: bool
+    reason: str
+    normalized_action: str
+    is_partial: bool = False
+
+
+def validate_player_action(player_country: str, action_text: str, world_facts: dict | None = None) -> ActionValidationResult:
+    text = action_text.strip()
+    if not text:
+        return ActionValidationResult(False, "Действие не может быть пустым.", text)
+
+    country = (player_country or "").strip()
+    if not country:
+        return ActionValidationResult(False, "Сначала выберите страну, за которую играете.", text)
+
+    lowered = text.lower()
+    country_lower = country.lower()
+    facts = world_facts or {}
+    owned_territories = [str(x).strip().lower() for x in facts.get("owned_territories", []) if str(x).strip()]
+
+    territorial_keywords = ("передать", "уступить", "отдать", "аннекс", "cede", "transfer", "annex")
+    treaty_keywords = ("договор", "соглашени", "treaty", "agreement", "подпис")
+    border_keywords = ("границ", "border")
+
+    is_territorial = any(k in lowered for k in territorial_keywords)
+
+    if is_territorial and owned_territories:
+        if not any(region in lowered for region in owned_territories):
+            return ActionValidationResult(
+                False,
+                "Нельзя передавать или уступать территории, которыми ваша страна не владеет.",
+                text,
+            )
+
+    if is_territorial and country_lower not in lowered:
+        normalized = f"Инициировать дипломатическое предложение от имени {country}: {text}"
+        return ActionValidationResult(
+            True,
+            "Прямое изменение чужих территорий невозможно: действие сохранено как дипломатическая инициатива.",
+            normalized,
+            is_partial=True,
+        )
+
+    if any(k in lowered for k in treaty_keywords) and "от имени" in lowered and country_lower not in lowered:
+        return ActionValidationResult(
+            False,
+            "Нельзя заключать договоры от имени третьих стран.",
+            text,
+        )
+
+    if any(k in lowered for k in border_keywords) and "между" in lowered and country_lower not in lowered:
+        return ActionValidationResult(
+            False,
+            "Нельзя объявлять изменение границ между двумя чужими странами от лица вашей страны.",
+            text,
+        )
+
+    return ActionValidationResult(True, "", text)
+
+
 def build_world_update_prompt(state: GameState, period: str) -> str:
     actions = "\n".join(f"- {a.text}" for a in state.current_turn.actions) or "- Нет действий"
     dialogs = (
